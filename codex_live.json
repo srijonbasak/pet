@@ -1,0 +1,169 @@
+{
+  "active": {
+    "provider": "codex",
+    "project": "src",
+    "project_path": "/home/srijon/Documents/arduinoo/display/src",
+    "chat": "Make Arduino",
+    "thread": "01a0cf7c-fd83-7ce1-a396-dca7f7f91cb0",
+    "context": {
+      "used": 58452,
+      "max": 258400,
+      "left_percent": 77,
+      "used_percent": 23,
+      "input_tokens": 58211,
+      "output_tokens": 241,
+      "cached_input_tokens": 57984,
+      "reasoning_output_tokens": 40
+    },
+    "last_event_at": "2026-09-23T20:11:12.711Z",
+    "file_updated_at": "2026-09-24T02:11:12",
+    "session_file": "/home/srijon/.codex/sessions/2026/09/24/rollout-2026-09-24T01-39-00-01a0cf7c-fd83-7ce1-a396-dca7f7f91cb0_01a0cfc7-4ec1-7940-a4e1-d1b482ddcace.jsonl"
+  },
+  "limits": {
+    "5h": {
+      "used_percent": 65.0,
+      "left_percent": 35,
+      "reset_at": 1790205559,
+      "reset": "5:19AM",
+      "window_seconds": 18000
+    },
+    "7d": {
+      "used_percent": 16.0,
+      "left_percent": 84,
+      "reset_at": 1790502728,
+      "reset": "27 Sep,3:52PM",
+      "window_seconds": 604800
+    },
+    "plan": "unknown",
+    "credits": {
+      "balance": "0",
+      "has_credits": false,
+      "unlimited": false
+    },
+    "fetched_at": "2026-09-24T09:14:08"
+  },
+  "quota_error": null,
+  "updated_at": "2026-09-24T09:14:08",
+  "local_projects": [
+    {
+      "name": "src",
+      "path": "/home/srijon/Documents/arduinoo/display/src",
+      "chats": [
+        {
+          "name": "Make Arduino",
+          "thread": "01a0cf7c-fd83-7ce1-a396-dca7f7f91cb0",
+          "context": {
+            "used": 58452,
+            "max": 258400,
+            "left_percent": 77,
+            "used_percent": 23,
+            "input_tokens": 58211,
+            "output_tokens": 241,
+            "cached_input_tokens": 57984,
+            "reasoning_output_tokens": 40
+          },
+          "last_event_at": "2026-09-23T20:11:12.711Z",
+          "file_updated_at": "2026-09-24T02:11:12",
+          "session_file": "/home/srijon/.codex/sessions/2026/09/24/rollout-2026-09-24T01-39-00-01a0cf7c-fd83-7ce1-a396-dca7f7f91cb0_01a0cfc7-4ec1-7940-a4e1-d1b482ddcace.jsonl"
+        },
+        {
+          "name": "Make Arduino",
+          "thread": "01a0cf7c-fd83-7ce1-a396-dca7f7f91cb0",
+          "context": {
+            "used": 149762,
+            "max": 258400,
+            "left_percent": 42,
+            "used_percent": 58,
+            "input_tokens": 149388,
+            "output_tokens": 374,
+            "cached_input_tokens": 148992,
+            "reasoning_output_tokens": 237
+          },
+          "last_event_at": "2026-09-23T19:38:43.921Z",
+          "file_updated_at": "2026-09-24T01:38:43",
+          "session_file": "/home/srijon/.codex/sessions/2026/09/24/rollout-2026-09-24T00-17-50-01a0cf7c-fd83-7ce1-a396-dca7f7f91cb0.jsonl"
+        }
+      ]
+    },
+    {
+      "name": "read-this-folder-understand-it-spring2511",
+      "path": "/home/srijon/Documents/Codex/2026-09-18/read-this-folder-understand-it-spring2511",
+      "chats": [
+        {
+          "name": "Read and understand thesis report",
+          "thread": "01a0b341-53c3-73a3-87df-88b298ec0a47",
+          "context": {
+            "used": 49024,
+            "max": 258400,
+            "left_percent": 81,
+            "used_percent": 19,
+            "input_tokens": 48813,
+            "output_tokens": 211,
+            "cached_input_tokens": 46848,
+            "reasoning_output_tokens": 30
+          },
+          "last_event_at": "2026-09-19T05:56:23.295Z",
+          "file_updated_at": "2026-09-19T11:56:23",
+          "session_file": "/home/srijon/.codex/sessions/2026/09/18/rollout-2026-09-18T22-38-04-01a0b341-53c3-73a3-87df-88b298ec0a47_01a0b561-db3a-7710-9253-c05d445c964d.jsonl"
+        },
+        {
+          "name": "Read and understand thesis report",
+          "thread": "01a0b341-53c3-73a3-87df-88b298ec0a47",
+          "context": {
+            "used": 112098,
+            "max": 258400,
+            "left_percent": 57,
+            "used_percent": 43,
+            "input_tokens": 110928,
+            "output_tokens": 1170,
+            "cached_input_tokens": 110592,
+            "reasoning_output_tokens": 1078
+          },
+          "last_event_at": "2026-09-18T07:43:37.894Z",
+          "file_updated_at": "2026-09-18T13:43:37",
+          "session_file": "/home/srijon/.codex/sessions/2026/09/18/rollout-2026-09-18T13-39-23-01a0b341-53c3-73a3-87df-88b298ec0a47_01a0b374-ae28-77d1-a968-e1ff8a9cc7d9.jsonl"
+        },
+        {
+          "name": "Read and understand thesis report",
+          "thread": "01a0b341-53c3-73a3-87df-88b298ec0a47",
+          "context": {
+            "used": 81472,
+            "max": 258400,
+            "left_percent": 68,
+            "used_percent": 32,
+            "input_tokens": 81011,
+            "output_tokens": 461,
+            "cached_input_tokens": 71296,
+            "reasoning_output_tokens": 281
+          },
+          "last_event_at": "2026-09-18T07:38:49.994Z",
+          "file_updated_at": "2026-09-18T13:38:49",
+          "session_file": "/home/srijon/.codex/sessions/2026/09/18/rollout-2026-09-18T12-43-18-01a0b341-53c3-73a3-87df-88b298ec0a47.jsonl"
+        }
+      ]
+    },
+    {
+      "name": "Downloads",
+      "path": "/home/srijon/Downloads",
+      "chats": [
+        {
+          "name": "Find XDM installation files",
+          "thread": "01a0ab4b-93b0-7300-acc6-cbfb4a3d4191",
+          "context": {
+            "used": 40338,
+            "max": 258400,
+            "left_percent": 84,
+            "used_percent": 16,
+            "input_tokens": 40205,
+            "output_tokens": 133,
+            "cached_input_tokens": 21888,
+            "reasoning_output_tokens": 0
+          },
+          "last_event_at": "2026-09-16T17:39:17.691Z",
+          "file_updated_at": "2026-09-16T23:39:17",
+          "session_file": "/home/srijon/.codex/sessions/2026/09/16/rollout-2026-09-16T23-37-32-01a0ab4b-93b0-7300-acc6-cbfb4a3d4191.jsonl"
+        }
+      ]
+    }
+  ]
+}

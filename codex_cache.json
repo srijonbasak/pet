@@ -1,0 +1,28 @@
+{
+  "limits": {
+    "5h": {
+      "used_percent": 65.0,
+      "left_percent": 35,
+      "reset_at": 1790205559,
+      "reset": "5:19AM",
+      "window_seconds": 18000
+    },
+    "7d": {
+      "used_percent": 16.0,
+      "left_percent": 84,
+      "reset_at": 1790502728,
+      "reset": "27 Sep,3:52PM",
+      "window_seconds": 604800
+    },
+    "plan": "unknown",
+    "credits": {
+      "balance": "0",
+      "has_credits": false,
+      "unlimited": false
+    },
+    "fetched_at": "2026-09-24T09:14:08"
+  },
+  "limits_fetched_epoch": 1790219648.0317636,
+  "quota_error": null,
+  "limits_source": "codex_session"
+}
