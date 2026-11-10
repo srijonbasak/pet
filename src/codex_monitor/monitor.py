@@ -23,6 +23,12 @@ ACTIVE_PROVIDER = "codex"
 def register_state_callback(cb):
     STATE_CALLBACKS.append(cb)
 
+def unregister_state_callback(cb):
+    try:
+        STATE_CALLBACKS.remove(cb)
+    except ValueError:
+        pass
+
 def _snapshot_to_state(snapshot) -> MonitorState:
     active = snapshot.get("active") or {}
     limits = snapshot.get("limits") or {}
@@ -241,6 +247,10 @@ def print_projects():
         print()
 
 class CodexFileHandler(FileSystemEventHandler):
+    def __init__(self, include_projects=True):
+        super().__init__()
+        self.include_projects = include_projects
+
     def on_modified(self, event):
         self.handle_event(event)
 
@@ -271,7 +281,7 @@ class CodexFileHandler(FileSystemEventHandler):
 
         try:
             with STATE_LOCK:
-                snapshot = build_snapshot(include_projects=True, refresh_quota=False)
+                snapshot = build_snapshot(include_projects=self.include_projects, refresh_quota=False)
             
             print("\n[local update]")
             active = snapshot.get("active") or {}
@@ -282,11 +292,11 @@ class CodexFileHandler(FileSystemEventHandler):
         except Exception as e:
             print("Local update error:", e)
 
-def quota_worker(stop_event):
+def quota_worker(stop_event, include_projects=True):
     while not stop_event.wait(QUOTA_REFRESH_SECONDS):
         try:
             with STATE_LOCK:
-                snapshot = build_snapshot(include_projects=True, refresh_quota=True)
+                snapshot = build_snapshot(include_projects=include_projects, refresh_quota=True)
             
             limits = snapshot.get("limits") or {}
             five = limits.get("5h") or {}
@@ -298,18 +308,19 @@ def quota_worker(stop_event):
         except Exception as e:
             print("Quota refresh error:", e)
 
-def run_watch_mode(run_event_loop=True):
+def run_watch_mode(run_event_loop=True, include_projects=True):
     print("Starting Codex usage monitor...")
     print("Codex home:", CODEX_HOME)
     print("Output JSON:", OUTPUT_FILE)
     print("Quota refresh:", f"{QUOTA_REFRESH_SECONDS} seconds")
 
     with STATE_LOCK:
-        snapshot = build_snapshot(include_projects=True, refresh_quota=False)
+        snapshot = build_snapshot(include_projects=include_projects, refresh_quota=False)
     
-    print_snapshot(snapshot)
+    if include_projects:
+        print_snapshot(snapshot)
 
-    event_handler = CodexFileHandler()
+    event_handler = CodexFileHandler(include_projects=include_projects)
     observer = Observer()
     watched_anything = False
 
@@ -327,7 +338,7 @@ def run_watch_mode(run_event_loop=True):
 
     observer.start()
     stop_event = threading.Event()
-    quota_thread = threading.Thread(target=quota_worker, args=(stop_event,), daemon=True)
+    quota_thread = threading.Thread(target=quota_worker, args=(stop_event, include_projects), daemon=True)
     quota_thread.start()
 
     if not run_event_loop:

@@ -66,10 +66,22 @@ def main():
     if args.gui:
         # Start file watching in a background thread without blocking
         import threading
-        t = threading.Thread(target=run_watch_mode, kwargs={"run_event_loop": False}, daemon=True)
+        stop_requested = threading.Event()
+        def watch():
+            try:
+                observer, stop_event = run_watch_mode(run_event_loop=False, include_projects=False)
+                stop_requested.wait()
+                stop_event.set()
+                observer.stop()
+                observer.join(timeout=2)
+            except Exception as exc:
+                print(f"Monitor stopped: {exc}")
+        t = threading.Thread(target=watch, name="codex-watch", daemon=True)
         t.start()
-        # Start GUI on main thread
-        return run_gui()
+        try:
+            return run_gui()
+        finally:
+            stop_requested.set()
 
     if args.watch:
         run_watch_mode()

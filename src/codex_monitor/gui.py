@@ -1,8 +1,9 @@
 """Small, calm Codex usage window with no polling-heavy UI work."""
 
+import signal
 import sys
 
-from PyQt6.QtCore import QPoint, Qt, pyqtSignal, QObject
+from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
@@ -13,6 +14,7 @@ from .bluetooth import get_bluetooth_status, register_bluetooth_status_callback
 from .monitor import get_latest_state, register_state_callback
 from .wifi_transport import get_wifi_status, register_wifi_status_callback, resend_latest
 from .widgets.radial_chart import AnimatedRadialChart
+from .device_controller import DeviceController
 
 
 class Signals(QObject):
@@ -65,7 +67,9 @@ class CodexWidget(QWidget):
         self.setWindowTitle("Codex Usage")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.resize(420, 610)
+        self.setMinimumWidth(500)
+        self.resize(540, 720)
+        self.device_controller = DeviceController(self)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(18, 18, 18, 18)
@@ -133,16 +137,24 @@ class CodexWidget(QWidget):
         c_layout.setContentsMargins(14, 12, 14, 12)
         self.wifi = QLabel(get_wifi_status())
         self.ble = QLabel(get_bluetooth_status())
+        self.usb = QLabel(self.device_controller.last_status)
+        self.usb.setWordWrap(True)
         self.wifi.setObjectName("connectionText")
         self.ble.setObjectName("connectionText")
         c_layout.addWidget(self.wifi)
         c_layout.addWidget(self.ble)
+        c_layout.addWidget(self.usb)
         root.addWidget(connection)
 
         sync = QPushButton("Send update")
         sync.setObjectName("sync")
         sync.clicked.connect(resend_latest)
         root.addWidget(sync)
+
+        studio = QPushButton("Open display studio")
+        studio.setObjectName("sync")
+        studio.clicked.connect(self.open_studio)
+        root.addWidget(studio)
 
         self.setStyleSheet("""
             QWidget { color:#f2f4f3; font-family:"Inter","Segoe UI",sans-serif; background:transparent; }
@@ -168,6 +180,7 @@ class CodexWidget(QWidget):
         self.signals.state.connect(self.update_state)
         self.signals.bluetooth.connect(self.ble.setText)
         self.signals.wifi.connect(self.wifi.setText)
+        self.device_controller.status.connect(self.usb.setText)
         register_state_callback(self.signals.state.emit)
         register_bluetooth_status_callback(self.signals.bluetooth.emit)
         register_wifi_status_callback(self.signals.wifi.emit)
@@ -182,6 +195,24 @@ class CodexWidget(QWidget):
         self.five.set_usage(state.limit_5h_left, state.limit_5h_reset)
         self.week.set_usage(state.limit_7d_left, state.limit_7d_reset)
 
+    def open_studio(self):
+        from .display_editor import DisplayEditor
+        if getattr(self, "studio", None) and self.studio.isVisible():
+            self.studio.raise_()
+            self.studio.activateWindow()
+            return
+        # A separate top-level window avoids inheriting the translucent
+        # dashboard's stylesheet and graphics effect on Wayland.
+        self.studio = DisplayEditor(controller=self.device_controller)
+        self.studio.show()
+
+    def closeEvent(self, event):
+        studio = getattr(self, "studio", None)
+        if studio:
+            studio.close()
+        self.device_controller.close()
+        super().closeEvent(event)
+
 
 def run_gui():
     app = QApplication(sys.argv)
@@ -191,4 +222,14 @@ def run_gui():
     if initial:
         widget.update_state(initial)
     widget.show()
-    return app.exec()
+    # Let Python process SIGINT while Qt's native event loop is running.
+    previous_sigint = signal.signal(signal.SIGINT, lambda *_: app.quit())
+    signal_timer = QTimer()
+    signal_timer.timeout.connect(lambda: None)
+    signal_timer.start(200)
+    app.aboutToQuit.connect(widget.close)
+    try:
+        return app.exec()
+    finally:
+        signal_timer.stop()
+        signal.signal(signal.SIGINT, previous_sigint)

@@ -5,11 +5,13 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
+#include <Preferences.h>
+#include <SPIFFS.h>
+#include <math.h>
 
-// Set these once before uploading. BLE still works when Wi-Fi is unavailable.
-const char *WIFI_SSID = "YOUR_WIFI_NAME";
-const char *WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 const uint16_t UDP_PORT = 4210;
+// Original sample wiring: battery through a 2:1 divider to GPIO1 (ADC1).
+const int BAT_PIN = 1;
 
 const char *SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
 const char *CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
@@ -17,12 +19,31 @@ const char *CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
 ST7789_ESP32C3 tft;
 ST7789_Sprite canvas(&tft);
 WiFiUDP udp;
+Preferences settingsStore;
+
+struct DisplaySettings {
+  int mode = 0;          // 0: alternate, 1: animation, 2: usage
+  int animation = 0;     // 0: full sequence, 1: standing, 2: laptop
+  int animationSeconds = 11;
+  int usageSeconds = 7;
+  int widgets = 7;       // context, five-hour, weekly
+  uint32_t background = 0xFFFFFF;
+  uint32_t accent = 0x6EA0FF;
+} displaySettings;
+String serialInput;
+bool serialOverflow = false;
+unsigned long screenCycleStart = 0;
+uint16_t configuredAccent;
+
+uint16_t rgb565(uint32_t rgb) {
+  return tft.color565((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
+}
 
 #define BG       TFT_BLACK
 #define PANEL    tft.color565(16, 22, 36)
 #define TRACK    tft.color565(48, 65, 92)
 #define MUTED    tft.color565(115, 143, 185)
-#define CODEX    tft.color565(110, 160, 255)
+#define CODEX    configuredAccent
 #define CODEX_HI tft.color565(150, 220, 255)
 #define FACE     tft.color565(5, 9, 18)
 #define PET_FACE tft.color565(110, 190, 255)
@@ -43,6 +64,49 @@ String incoming;
 unsigned long lastPacket = 0;
 unsigned long lastFrame = 0;
 bool usageScreen = false;
+void acceptPacket(String line);
+void sceneCommand(const String &line);
+bool drawScene(char page);
+File sceneUpload;
+size_t sceneExpected = 0, sceneReceived = 0;
+uint32_t sceneHash = 2166136261UL, sceneExpectedHash = 0;
+bool sceneReady = false;
+bool batteryEnabled = false;
+int batteryPercent = -1;
+unsigned long lastBatteryCheck = 0, lastWifiCheck = 0;
+bool wifiOnline = false;
+bool wifiPending = false;
+unsigned long wifiAttemptAt = 0;
+bool wifiScanPending = false;
+bool wifiResumeAfterScan = false;
+
+void resumeWifiAfterScan() {
+  if (!wifiResumeAfterScan) return;
+  wifiResumeAfterScan = false;
+  String ssid = settingsStore.getString("wifiSsid", "");
+  if (!ssid.length()) return;
+  String password = settingsStore.getString("wifiPass", "");
+  WiFi.begin(ssid.c_str(), password.c_str());
+  wifiPending = true;
+  wifiAttemptAt = millis();
+}
+
+bool decodeHex(const String &hex, String &out) {
+  if (hex.length() % 2) return false;
+  out = "";
+  for (unsigned int i = 0; i < hex.length(); i += 2) {
+    char pair[] = {hex[i], hex[i + 1], 0}; char *end;
+    long c = strtol(pair, &end, 16);
+    if (*end || c == 0) return false;
+    out += (char)c;
+  }
+  return true;
+}
+
+void sendWifiStatus() {
+  if (WiFi.status() == WL_CONNECTED) Serial.println("WIFI|CONNECTED|" + WiFi.localIP().toString());
+  else Serial.println("WIFI|DISCONNECTED");
+}
 
 String fieldAt(const String &line, int wanted) {
   int start = 0;
@@ -55,17 +119,197 @@ String fieldAt(const String &line, int wanted) {
   return "";
 }
 
+void loadDisplaySettings() {
+  settingsStore.begin("codex-display", false);
+  displaySettings.mode = constrain(settingsStore.getInt("mode", 0), 0, 2);
+  displaySettings.animation = constrain(settingsStore.getInt("animation", 0), 0, 2);
+  displaySettings.animationSeconds = constrain(settingsStore.getInt("animSecs", 11), 2, 60);
+  displaySettings.usageSeconds = constrain(settingsStore.getInt("usageSecs", 7), 2, 60);
+  displaySettings.widgets = constrain(settingsStore.getInt("widgets", 7), 1, 7);
+  displaySettings.background = settingsStore.getUInt("background", 0xFFFFFF) & 0xFFFFFF;
+  displaySettings.accent = settingsStore.getUInt("accent", 0x6EA0FF) & 0xFFFFFF;
+  configuredAccent = rgb565(displaySettings.accent);
+  batteryEnabled = settingsStore.getBool("battery", false);
+}
+
+bool parseNumber(const String &value, long minimum, long maximum, long &result, int base = 10) {
+  if (!value.length()) return false;
+  char *end = nullptr;
+  result = strtol(value.c_str(), &end, base);
+  return end && *end == '\0' && result >= minimum && result <= maximum;
+}
+
+void sendDisplaySettings() {
+  char response[96];
+  snprintf(response, sizeof(response), "SET|%d|%d|%d|%d|%d|%06lX|%06lX",
+    displaySettings.mode, displaySettings.animation, displaySettings.animationSeconds,
+    displaySettings.usageSeconds, displaySettings.widgets,
+    (unsigned long)displaySettings.background, (unsigned long)displaySettings.accent);
+  Serial.println(response);
+}
+
+void handleSerialCommand(String line) {
+  line.trim();
+  if (line == "HELLO|1") { Serial.println("READY|1"); Serial.println("ENGINE|4"); sendDisplaySettings(); sendWifiStatus(); Serial.printf("BATTERY|%d\n", batteryPercent); return; }
+  if (line == "GET|1") { sendDisplaySettings(); return; }
+  if (line == "WIFI|GET") { sendWifiStatus(); return; }
+  if (line == "WIFI|SCAN") {
+    if (wifiScanPending) { Serial.println("SCAN|START"); return; }
+    // ESP-IDF can reject a scan while an association attempt is in progress.
+    // Pause that attempt only while disconnected, then resume it afterwards.
+    if (wifiPending && WiFi.status() != WL_CONNECTED) {
+      wifiResumeAfterScan = true;
+      wifiPending = false;
+      WiFi.disconnect(false, false);
+    }
+    WiFi.scanDelete();
+    int result = WiFi.scanNetworks(true, false, false, 300);
+    if (result == WIFI_SCAN_FAILED) { resumeWifiAfterScan(); Serial.println("SCAN|FAILED"); }
+    else { wifiScanPending = true; Serial.println("SCAN|START"); }
+    return;
+  }
+  if (line.startsWith("WIFI|SET|")) {
+    String ssid, password;
+    if (!decodeHex(fieldAt(line, 2), ssid) || !decodeHex(fieldAt(line, 3), password) ||
+        ssid.length() < 1 || ssid.length() > 32 || password.length() > 63 ||
+        (password.length() > 0 && password.length() < 8)) { Serial.println("ERR|wifi-input"); return; }
+    bool saved = settingsStore.putString("wifiSsid", ssid) > 0;
+    saved &= settingsStore.putString("wifiPass", password) > 0 || password.length() == 0;
+    if (!saved) { Serial.println("ERR|wifi-save"); return; }
+    WiFi.disconnect();
+    WiFi.begin(ssid.c_str(), password.c_str());
+    wifiPending = true; wifiAttemptAt = millis();
+    Serial.println("WIFI|CONNECTING");
+    return;
+  }
+  if (line == "BAT|1" || line == "BAT|0") {
+    batteryEnabled = line == "BAT|1";
+    if (!settingsStore.putBool("battery", batteryEnabled)) { Serial.println("ERR|battery-save"); return; }
+    batteryPercent = -1; lastBatteryCheck = 0;
+    Serial.println(batteryEnabled ? "ACK|BAT|1" : "ACK|BAT|0");
+    if (!batteryEnabled) Serial.println("BATTERY|-1");
+    return;
+  }
+  if (line.startsWith("SCN|")) { sceneCommand(line); return; }
+  if (line.startsWith("CD2|")) { acceptPacket(line); return; }
+  if (!line.startsWith("CFG|1|")) { Serial.println("ERR|command"); return; }
+  long values[7];
+  if (!parseNumber(fieldAt(line, 2), 0, 2, values[0]) ||
+      !parseNumber(fieldAt(line, 3), 0, 2, values[1]) ||
+      !parseNumber(fieldAt(line, 4), 2, 60, values[2]) ||
+      !parseNumber(fieldAt(line, 5), 2, 60, values[3]) ||
+      !parseNumber(fieldAt(line, 6), 1, 7, values[4]) ||
+      fieldAt(line, 7).length() != 6 || fieldAt(line, 8).length() != 6 ||
+      !parseNumber(fieldAt(line, 7), 0, 0xFFFFFF, values[5], 16) ||
+      !parseNumber(fieldAt(line, 8), 0, 0xFFFFFF, values[6], 16) ||
+      fieldAt(line, 9).length()) { Serial.println("ERR|config"); return; }
+  displaySettings.mode = values[0]; displaySettings.animation = values[1];
+  displaySettings.animationSeconds = values[2]; displaySettings.usageSeconds = values[3];
+  displaySettings.widgets = values[4]; displaySettings.background = values[5];
+  displaySettings.accent = values[6]; configuredAccent = rgb565(displaySettings.accent);
+  bool saved = settingsStore.putInt("mode", displaySettings.mode) > 0;
+  saved &= settingsStore.putInt("animation", displaySettings.animation) > 0;
+  saved &= settingsStore.putInt("animSecs", displaySettings.animationSeconds) > 0;
+  saved &= settingsStore.putInt("usageSecs", displaySettings.usageSeconds) > 0;
+  saved &= settingsStore.putInt("widgets", displaySettings.widgets) > 0;
+  saved &= settingsStore.putUInt("background", displaySettings.background) > 0;
+  saved &= settingsStore.putUInt("accent", displaySettings.accent) > 0;
+  screenCycleStart = millis();
+  if (!saved) { Serial.println("ERR|save"); return; }
+  Serial.println("ACK|CFG|1");
+  sendDisplaySettings();
+}
+
+void pollSerial() {
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n') {
+      if (serialOverflow) Serial.println("ERR|length");
+      else if (serialInput.length()) handleSerialCommand(serialInput);
+      serialInput = ""; serialOverflow = false;
+    } else if (!serialOverflow && c != '\r') {
+      if (serialInput.length() < 220) serialInput += c;
+      else { serialInput = ""; serialOverflow = true; }
+    }
+  }
+}
+
+void sceneCommand(const String &line) {
+  String action = fieldAt(line, 1);
+  if (action == "INIT") {
+    if (sceneReady) { Serial.println("ACK|SCN|INIT"); return; }
+    if (!SPIFFS.format() || !SPIFFS.begin(false)) { Serial.println("ERR|scene-storage"); return; }
+    sceneReady = true;
+    Serial.println("ACK|SCN|INIT");
+  } else if (action == "BEGIN") {
+    long size, hash;
+    if (!sceneReady || !parseNumber(fieldAt(line, 2), 1, 60000, size) ||
+        fieldAt(line, 3).length() != 8) { Serial.println("ERR|scene-begin"); return; }
+    char *end = nullptr;
+    String hashText = fieldAt(line, 3);
+    unsigned long parsed = strtoul(hashText.c_str(), &end, 16);
+    if (!end || *end) { Serial.println("ERR|scene-hash"); return; }
+    hash = parsed;
+    if (sceneUpload) sceneUpload.close();
+    sceneUpload = SPIFFS.open("/scene.tmp", FILE_WRITE);
+    if (!sceneUpload) { Serial.println("ERR|scene-storage"); return; }
+    sceneExpected = size; sceneReceived = 0; sceneHash = 2166136261UL;
+    sceneExpectedHash = (uint32_t)hash;
+    Serial.println("ACK|SCN|0");
+  } else if (action == "DATA") {
+    long offset;
+    String hex = fieldAt(line, 3);
+    if (!sceneUpload || !parseNumber(fieldAt(line, 2), 0, 60000, offset) ||
+        offset != (long)sceneReceived || hex.length() == 0 || hex.length() > 160 ||
+        hex.length() % 2 || sceneReceived + hex.length() / 2 > sceneExpected) {
+      Serial.println("ERR|scene-data"); return;
+    }
+    uint8_t bytes[80];
+    for (unsigned int i = 0; i < hex.length(); i += 2) {
+      char pair[] = {hex[i], hex[i + 1], 0}; char *end;
+      long value = strtol(pair, &end, 16);
+      if (*end) { Serial.println("ERR|scene-hex"); return; }
+      bytes[i / 2] = value;
+    }
+    size_t length = hex.length() / 2;
+    if (sceneUpload.write(bytes, length) != length) { Serial.println("ERR|scene-write"); return; }
+    for (size_t i = 0; i < length; i++) { sceneHash ^= bytes[i]; sceneHash *= 16777619UL; }
+    sceneReceived += length;
+    Serial.printf("ACK|SCN|%u\n", (unsigned int)sceneReceived);
+  } else if (action == "END") {
+    if (!sceneUpload || sceneReceived != sceneExpected || sceneHash != sceneExpectedHash) {
+      if (sceneUpload) sceneUpload.close();
+      Serial.println("ERR|scene-checksum"); return;
+    }
+    sceneUpload.close();
+    SPIFFS.remove("/scene.old");
+    bool hadOld = SPIFFS.exists("/scene.txt");
+    if (hadOld && !SPIFFS.rename("/scene.txt", "/scene.old")) { Serial.println("ERR|scene-commit"); return; }
+    if (!SPIFFS.rename("/scene.tmp", "/scene.txt")) {
+      if (hadOld) SPIFFS.rename("/scene.old", "/scene.txt");
+      Serial.println("ERR|scene-commit"); return;
+    }
+    SPIFFS.remove("/scene.old");
+    screenCycleStart = millis();
+    Serial.println("ACK|SCN|DONE");
+  } else if (action == "ABORT") {
+    if (sceneUpload) sceneUpload.close();
+    SPIFFS.remove("/scene.tmp");
+    Serial.println("ACK|SCN|ABORT");
+  } else Serial.println("ERR|scene-command");
+}
+
 void acceptPacket(String line) {
   line.trim();
   if (!line.startsWith("CD2|")) return;
   usage.project = fieldAt(line, 1);
   usage.chat = fieldAt(line, 2);
-  usage.context = fieldAt(line, 3).toInt();
+  usage.context = fieldAt(line, 3) == "--" ? -1 : fieldAt(line, 3).toInt();
   usage.used = fieldAt(line, 4).toInt();
   usage.maximum = fieldAt(line, 5).toInt();
-  usage.fiveHour = fieldAt(line, 6).toInt();
+  usage.fiveHour = fieldAt(line, 6) == "--" ? -1 : fieldAt(line, 6).toInt();
   usage.fiveReset = fieldAt(line, 7);
-  usage.weekly = fieldAt(line, 8).toInt();
+  usage.weekly = fieldAt(line, 8) == "--" ? -1 : fieldAt(line, 8).toInt();
   usage.weekReset = fieldAt(line, 9);
   lastPacket = millis();
 }
@@ -97,10 +341,55 @@ void startBluetooth() {
 void startWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  unsigned long until = millis() + 8000;
-  while (WiFi.status() != WL_CONNECTED && millis() < until) delay(80);
-  if (WiFi.status() == WL_CONNECTED) udp.begin(UDP_PORT);
+  WiFi.persistent(false);
+  String ssid = settingsStore.getString("wifiSsid", "");
+  if (ssid.length()) {
+    String password = settingsStore.getString("wifiPass", "");
+    WiFi.begin(ssid.c_str(), password.c_str());
+    wifiPending = true; wifiAttemptAt = millis();
+  }
+}
+
+void updateWifi(unsigned long now) {
+  if (wifiScanPending) {
+    int count = WiFi.scanComplete();
+    if (count >= 0) {
+      for (int i = 0; i < min(count, 30); i++) {
+        String ssid = WiFi.SSID(i);
+        if (!ssid.length()) continue;
+        Serial.print("SCAN|ITEM|");
+        for (unsigned int j = 0; j < ssid.length(); j++) Serial.printf("%02X", (uint8_t)ssid[j]);
+        Serial.printf("|%d|%d\n", WiFi.RSSI(i), WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? 1 : 0);
+      }
+      WiFi.scanDelete(); wifiScanPending = false; resumeWifiAfterScan(); Serial.println("SCAN|DONE");
+    } else if (count == WIFI_SCAN_FAILED) {
+      WiFi.scanDelete(); wifiScanPending = false; resumeWifiAfterScan(); Serial.println("SCAN|FAILED");
+    }
+  }
+  if (now - lastWifiCheck < 2000) return;
+  lastWifiCheck = now;
+  bool online = WiFi.status() == WL_CONNECTED;
+  if (online) wifiPending = false;
+  else if (wifiPending && now - wifiAttemptAt >= 20000) {
+    wifiPending = false;
+    Serial.println("WIFI|FAILED");
+  }
+  if (online != wifiOnline) {
+    wifiOnline = online;
+    if (online) udp.begin(UDP_PORT); else udp.stop();
+    sendWifiStatus();
+  }
+}
+
+void updateBattery(unsigned long now) {
+  if (!batteryEnabled || (lastBatteryCheck && now - lastBatteryCheck < 10000)) return;
+  lastBatteryCheck = now;
+  uint32_t sum = 0;
+  for (int i = 0; i < 8; i++) sum += analogReadMilliVolts(BAT_PIN);
+  long batteryMv = (sum / 8) * 2L;
+  batteryPercent = batteryMv >= 2800 && batteryMv <= 4400
+      ? constrain(map(batteryMv, 3300, 4200, 0, 100), 0, 100) : -1;
+  Serial.printf("BATTERY|%d\n", batteryPercent);
 }
 
 void pollWifi() {
@@ -168,8 +457,109 @@ void spriteFillTriangle(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t
   }
 }
 
+// Scene format is generated on the desktop. The fixed engine interprets
+// background, rectangle, text, gauge and RGB565 animation-frame commands.
+bool drawScene(char page) {
+  File file = SPIFFS.open("/scene.txt", FILE_READ);
+  if (!file) return false;
+  bool found = false;
+  int enabledBits[] = {2, 4, 1};
+  int values[] = {usage.fiveHour, usage.weekly, usage.context};
+  const char *names[] = {"5-HOUR LIMIT", "WEEKLY LIMIT", "CONTEXT"};
+  while (file.available()) {
+    String line = file.readStringUntil('\n');
+    if (fieldAt(line, 1) != String(page)) continue;
+    String kind = fieldAt(line, 0);
+    if (kind == "S") {
+      canvas.fillSprite(rgb565(strtoul(fieldAt(line, 2).c_str(), nullptr, 16)));
+      found = true;
+    } else if (kind == "R") {
+      int x = fieldAt(line, 2).toInt(), y = fieldAt(line, 3).toInt();
+      int w = fieldAt(line, 4).toInt(), h = fieldAt(line, 5).toInt();
+      if (x >= 0 && y >= 0 && w > 0 && h > 0 && x + w <= 240 && y + h <= 240)
+        canvas.fillRect(x, y, w, h, rgb565(strtoul(fieldAt(line, 6).c_str(), nullptr, 16)));
+    } else if (kind == "T") {
+      int x = fieldAt(line, 2).toInt(), y = fieldAt(line, 3).toInt();
+      int size = constrain(fieldAt(line, 4).toInt(), 1, 4);
+      if (x >= 0 && y >= 0 && x < 240 && y < 240) {
+        canvas.setCursor(x, y); canvas.setTextSize(size);
+        canvas.setTextColor(rgb565(strtoul(fieldAt(line, 5).c_str(), nullptr, 16)));
+        canvas.print(fieldAt(line, 6));
+      }
+    } else if (kind == "D") {
+      int x = fieldAt(line, 2).toInt(), y = fieldAt(line, 3).toInt();
+      if (x < 0 || x > 190 || y < 0 || y > 225) continue;
+      uint16_t ink = rgb565(strtoul(fieldAt(line, 4).c_str(), nullptr, 16));
+      canvas.drawRect(x, y, 22, 11, ink);
+      canvas.fillRect(x + 22, y + 3, 2, 5, ink);
+      if (batteryPercent >= 0) canvas.fillRect(x + 2, y + 2, batteryPercent * 18 / 100, 7, ink);
+      canvas.setTextColor(ink); canvas.setTextSize(1); canvas.setCursor(x + 28, y + 2);
+      if (batteryPercent < 0) canvas.print("--");
+      else { canvas.print(batteryPercent); canvas.print("%"); }
+    } else if (kind == "B") {
+      int x = fieldAt(line, 2).toInt(), y = fieldAt(line, 3).toInt();
+      int w = fieldAt(line, 4).toInt();
+      String binding = fieldAt(line, 6);
+      int index = binding == "five" ? 0 : binding == "week" ? 1 : 2;
+      if (x < 0 || y < 0 || w < 1 || x + w > 240 || y + 42 > 240) continue;
+      uint16_t color = rgb565(strtoul(fieldAt(line, 5).c_str(), nullptr, 16));
+      canvas.setTextSize(1); canvas.setTextColor(tft.color565(100, 116, 138));
+      canvas.setCursor(x, y); canvas.print(names[index]);
+      canvas.setTextSize(2); canvas.setTextColor(tft.color565(34, 45, 62));
+      canvas.setCursor(x, y + 13);
+      if (values[index] < 0) canvas.print("--");
+      else { canvas.print(values[index]); canvas.print("% LEFT"); }
+      canvas.fillRect(x, y + 35, w, 6, tft.color565(224, 230, 237));
+      if (values[index] > 0) canvas.fillRect(x, y + 35, w * constrain(values[index], 0, 100) / 100, 6, color);
+    } else if (kind == "G") {
+      int cx = fieldAt(line, 2).toInt(), cy = fieldAt(line, 3).toInt();
+      int radius = constrain(fieldAt(line, 4).toInt(), 30, 100);
+      uint16_t color = rgb565(strtoul(fieldAt(line, 5).c_str(), nullptr, 16));
+      int count = 0;
+      for (int i = 0; i < 3; i++) if (displaySettings.widgets & enabledBits[i]) count++;
+      int selected = ((millis() - screenCycleStart) / 2500) % max(count, 1), index = 0;
+      for (int i = 0; i < 3; i++) if (displaySettings.widgets & enabledBits[i]) {
+        if (selected-- == 0) { index = i; break; }
+      }
+      int lit = values[index] < 0 ? 0 : constrain(values[index], 0, 100) * 54 / 100;
+      for (int i = 0; i <= 54; i++) {
+        float a = (135.0f + i * 5.0f) * 0.017453293f;
+        float dx = cosf(a), dy = sinf(a);
+        spriteLine(cx + dx * (radius - 9), cy + dy * (radius - 9),
+                   cx + dx * radius, cy + dy * radius,
+                   i < lit ? color : tft.color565(224, 230, 237));
+      }
+      canvas.setTextColor(tft.color565(100, 116, 138)); canvas.setTextSize(1);
+      canvas.setCursor(cx - strlen(names[index]) * 3, cy - 25); canvas.print(names[index]);
+      String value = values[index] < 0 ? "--" : String(values[index]) + "%";
+      canvas.setTextColor(tft.color565(34, 45, 62)); canvas.setTextSize(4);
+      canvas.setCursor(cx - value.length() * 12, cy - 5); canvas.print(value);
+      canvas.setTextColor(tft.color565(100, 116, 138)); canvas.setTextSize(1);
+      canvas.setCursor(cx - 12, cy + 34); canvas.print("LEFT");
+    } else if (kind == "I") {
+      int frame = fieldAt(line, 2).toInt(), total = fieldAt(line, 3).toInt();
+      int frameMs = constrain(fieldAt(line, 4).toInt(), 80, 2000);
+      int x = fieldAt(line, 5).toInt(), y = fieldAt(line, 6).toInt();
+      int scale = constrain(fieldAt(line, 7).toInt(), 1, 6);
+      if (total <= 0 || frame != (int)(((millis() - screenCycleStart) / frameMs) % total) ||
+          x < 0 || y < 0 || x + 32 * scale > 240 || y + 32 * scale > 240) continue;
+      String pixels = fieldAt(line, 8);
+      if (pixels.length() != 4096) continue;
+      for (int i = 0; i < 1024; i++) {
+        char colorText[5];
+        for (int j = 0; j < 4; j++) colorText[j] = pixels[i * 4 + j];
+        colorText[4] = 0;
+        canvas.fillRect(x + (i % 32) * scale, y + (i / 32) * scale, scale, scale,
+                        (uint16_t)strtoul(colorText, nullptr, 16));
+      }
+    }
+  }
+  file.close();
+  return found;
+}
+
 void drawPet() {
-  const unsigned long sceneMs = millis() % 18000;
+  const unsigned long sceneMs = (millis() - screenCycleStart) % 11000;
   const unsigned long frame = sceneMs / 40;
   const int phase = frame % 24;
   const int bob = phase < 12 ? phase / 6 : (23 - phase) / 6;
@@ -177,14 +567,15 @@ void drawPet() {
   const bool blink = frame % 101 < 3;
   const bool pulse = (frame / 6) & 1;
   const int antennaSway = (frame / 4) % 3 - 1;
-  const bool laptop = sceneMs >= 3200 && sceneMs < 7800;
-  const bool nullFace = (sceneMs >= 1500 && sceneMs < 3200) ||
-                        (sceneMs >= 7800 && sceneMs < 9500);
-  const bool happyFace = laptop && sceneMs >= 4700;
+  const bool laptop = displaySettings.animation == 2 ||
+                      (displaySettings.animation == 0 && sceneMs >= 3200 && sceneMs < 7800);
+  const bool nullFace = displaySettings.animation != 2 && ((sceneMs >= 1500 && sceneMs < 3200) ||
+                        (sceneMs >= 7800 && sceneMs < 9500));
+  const bool happyFace = laptop && (displaySettings.animation == 2 || sceneMs >= 4700);
   const int x = 60, y = (laptop ? 18 : 32) + bob;
 
   // Clean white stage with one centered, high-contrast character.
-  canvas.fillSprite(TFT_WHITE);
+  canvas.fillSprite(rgb565(displaySettings.background));
 
   // Two-pixel antenna and large, crisp monitor head.
   spriteLine(x + 60, y + 13, x + 60, y + 1, TRACK);
@@ -265,25 +656,74 @@ void bar(int x, int y, int width, int percent) {
 }
 
 void drawUsage() {
-  textFit("CODEX USAGE", 16, 14, 20, CODEX_HI, 2);
-  textFit(usage.project, 16, 42, 27, TFT_WHITE);
-  textFit(usage.chat, 16, 57, 31, MUTED);
+  const int bits[] = {2, 4, 1};
+  const char *labels[] = {"5-HOUR LIMIT", "WEEKLY LIMIT", "CONTEXT"};
+  const int values[] = {usage.fiveHour, usage.weekly, usage.context};
+  int count = 0;
+  for (int i = 0; i < 3; i++) if (displaySettings.widgets & bits[i]) count++;
+  int selected = ((millis() - screenCycleStart) / 2500) % max(count, 1);
+  int current = 0;
+  for (int i = 0; i < 3; i++) {
+    if (!(displaySettings.widgets & bits[i])) continue;
+    if (selected-- == 0) { current = i; break; }
+  }
 
-  spriteFillPanel(12, 79, 216, 58, 10, PANEL);
-  textFit("5 HOUR", 24, 91, 10, MUTED);
-  textFit(usage.fiveHour >= 0 ? String(usage.fiveHour) + "% LEFT" : "--", 24, 107, 15, TFT_WHITE, 2);
-  bar(24, 126, 190, usage.fiveHour);
+  const uint16_t ink = tft.color565(34, 45, 62);
+  const uint16_t soft = tft.color565(135, 149, 166);
+  const uint16_t track = tft.color565(224, 230, 237);
+  canvas.fillSprite(TFT_WHITE);
 
-  spriteFillPanel(12, 145, 216, 58, 10, PANEL);
-  textFit("WEEKLY", 24, 157, 10, MUTED);
-  textFit(usage.weekly >= 0 ? String(usage.weekly) + "% LEFT" : "--", 24, 173, 15, TFT_WHITE, 2);
-  bar(24, 192, 190, usage.weekly);
+  // A 270-degree speedometer. Drawing short radial strokes keeps the arc
+  // compatible with the lightweight ST7789 sprite library.
+  int percent = values[current];
+  int lit = percent < 0 ? 0 : constrain(percent, 0, 100) * 54 / 100;
+  for (int i = 0; i <= 54; i++) {
+    float angle = (135.0f + i * 5.0f) * 0.017453293f;
+    float dx = cosf(angle), dy = sinf(angle);
+    uint16_t color = i < lit ? CODEX : track;
+    spriteLine(120 + dx * 82, 108 + dy * 82,
+               120 + dx * 91, 108 + dy * 91, color);
+    spriteLine(120 + dx * 83, 108 + dy * 83,
+               120 + dx * 90, 108 + dy * 90, color);
+    if (i % 9 == 0) {
+      spriteLine(120 + dx * 96, 108 + dy * 96,
+                 120 + dx * 100, 108 + dy * 100, soft);
+    }
+  }
+  canvas.setTextColor(soft, TFT_WHITE);
+  canvas.setTextSize(1);
+  canvas.setCursor(120 - strlen(labels[current]) * 3, 85);
+  canvas.print(labels[current]);
+  String value = percent < 0 ? "--" : String(percent) + "%";
+  canvas.setTextColor(ink, TFT_WHITE);
+  canvas.setTextSize(4);
+  canvas.setCursor(120 - value.length() * 12, 103);
+  canvas.print(value);
+  canvas.setTextSize(1);
+  canvas.setTextColor(soft, TFT_WHITE);
+  canvas.setCursor(108, 143);
+  canvas.print("LEFT");
+  canvas.fillRect(85, 169, 70, 2, CODEX);
 
-  String footer = usage.context >= 0 ? "CTX " + String(usage.context) + "% LEFT" : "WAITING FOR DATA";
-  textFit(footer, 16, 218, 28, CODEX_HI);
+  // The selected label and page indicators make it clear which limit is shown.
+  canvas.setCursor(64, 199);
+  canvas.print("0");
+  canvas.setCursor(157, 199);
+  canvas.print("100%");
+  for (int i = 0; i < count; i++) {
+    int x = 120 - (count - 1) * 7 + i * 14;
+    canvas.fillCircle(x, 220, 3, i == ((millis() - screenCycleStart) / 2500) % count ? CODEX : track);
+  }
 }
 
 void setup() {
+  Serial.begin(115200);
+  analogReadResolution(12);
+  analogSetPinAttenuation(BAT_PIN, ADC_11db);
+  loadDisplaySettings();
+  sceneReady = SPIFFS.begin(false);
+  if (sceneReady && !SPIFFS.exists("/scene.txt") && SPIFFS.exists("/scene.old"))
+    SPIFFS.rename("/scene.old", "/scene.txt");
   tft.init();
   tft.setRotation(0);
   tft.fillScreen(TFT_BLACK);
@@ -294,14 +734,21 @@ void setup() {
 }
 
 void loop() {
-  if (WiFi.status() == WL_CONNECTED) pollWifi();
+  pollSerial();
   unsigned long now = millis();
-  // Play the complete 11-second reference animation, then show usage for 7s.
-  usageScreen = (now % 18000) >= 11000;
-  if (now - lastFrame >= 40) {
+  updateWifi(now);
+  updateBattery(now);
+  if (wifiOnline) pollWifi();
+  unsigned long animationMs = (unsigned long)displaySettings.animationSeconds * 1000;
+  unsigned long cycleMs = animationMs + (unsigned long)displaySettings.usageSeconds * 1000;
+  usageScreen = displaySettings.mode == 2 || (displaySettings.mode == 0 &&
+    (now - screenCycleStart) % cycleMs >= animationMs);
+  if (now - lastFrame >= (usageScreen ? 250 : 100)) {
     lastFrame = now;
-    canvas.fillSprite(usageScreen ? TFT_BLACK : TFT_WHITE);
-    usageScreen ? drawUsage() : drawPet();
+    canvas.fillSprite(usageScreen ? TFT_BLACK : rgb565(displaySettings.background));
+    if (!drawScene(usageScreen ? 'U' : 'A')) {
+      usageScreen ? drawUsage() : drawPet();
+    }
     canvas.pushSprite(0, 0);
   }
   delay(2);

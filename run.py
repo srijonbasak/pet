@@ -21,6 +21,10 @@ def _restart_in_project_venv():
 
 _restart_in_project_venv()
 
+# Qt can emit a warning on every Wayland text-input focus change. Keep the
+# terminal usable while respecting any logging rules explicitly set by the user.
+os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.wayland.textinput.warning=false")
+
 from src.codex_monitor.main import main
 
 if __name__ == "__main__":

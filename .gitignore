@@ -1,3 +1,5 @@
 .venv
+display_design.json
+.device_settings.ini
 __pycache__
 src/codex_monitor/__pycache__
