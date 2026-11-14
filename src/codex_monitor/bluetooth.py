@@ -19,6 +19,10 @@ _status_callbacks = []
 def register_bluetooth_status_callback(callback):
     _status_callbacks.append(callback)
 
+def unregister_bluetooth_status_callback(callback):
+    if callback in _status_callbacks:
+        _status_callbacks.remove(callback)
+
 def get_bluetooth_status():
     return _status
 

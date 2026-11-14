@@ -21,6 +21,11 @@ def register_wifi_status_callback(callback):
     _callbacks.append(callback)
 
 
+def unregister_wifi_status_callback(callback):
+    if callback in _callbacks:
+        _callbacks.remove(callback)
+
+
 def get_wifi_status():
     return _status
 

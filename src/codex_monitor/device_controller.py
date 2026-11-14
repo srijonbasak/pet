@@ -14,6 +14,7 @@ class DeviceController(QObject):
     battery = pyqtSignal(object)
     wifi = pyqtSignal(str)
     network = pyqtSignal(object)
+    progress = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -29,7 +30,7 @@ class DeviceController(QObject):
         self.last_wifi = "Display Wi-Fi: unknown"
         self._last_attempt = 0.0
         self.device = DeviceUSB(self.status.emit, self.settings.emit, self.battery.emit,
-                                self.wifi.emit, self.network.emit)
+                                self.wifi.emit, self.network.emit, self.progress.emit)
         self.status.connect(self._record_status)
         self.settings.connect(self._record_settings)
         self.battery.connect(self._record_battery)

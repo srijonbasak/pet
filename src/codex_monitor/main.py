@@ -39,7 +39,7 @@ def main():
     parser.add_argument(
         "--gui",
         action="store_true",
-        help="Run the floating GUI widget"
+        help="Open the integrated desktop display studio"
     )
 
     parser.add_argument(

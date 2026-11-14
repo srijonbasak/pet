@@ -71,12 +71,13 @@ def find_auto_port(preferred=None):
 class DeviceUSB:
     """Own the port in one background thread; UI never blocks on USB I/O."""
 
-    def __init__(self, on_status, on_settings, on_battery=None, on_wifi=None, on_network=None):
+    def __init__(self, on_status, on_settings, on_battery=None, on_wifi=None, on_network=None, on_progress=None):
         self.on_status = on_status
         self.on_settings = on_settings
         self.on_battery = on_battery or (lambda value: None)
         self.on_wifi = on_wifi or (lambda value: None)
         self.on_network = on_network or (lambda value: None)
+        self.on_progress = on_progress or (lambda value: None)
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -274,13 +275,16 @@ class DeviceUSB:
                             scene_waiting = True
                             scene_deadline = time.monotonic() + 8
                             self.on_status("Uploading screen design…")
+                            self.on_progress(0)
                     elif reply.startswith("ACK|SCN|") and scene is not None:
                         part = reply.split("|")[-1]
                         if part == "DONE":
+                            self.on_progress(100)
                             scene = None
                             scene_waiting = False
                             self.on_status("Screen design saved on display")
                         elif part.isdigit() and int(part) == scene_offset:
+                            self.on_progress(int(scene_offset * 100 / len(scene)))
                             if scene_offset == len(scene):
                                 conn.write(b"SCN|END\n")
                             else:

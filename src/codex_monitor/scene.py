@@ -1,6 +1,9 @@
 """Compile desktop display choices into portable, bounded drawing commands."""
 
 from dataclasses import dataclass
+from pathlib import Path
+
+DESIGN_FILE = Path(__file__).resolve().parents[2] / "display_design.json"
 
 
 @dataclass(frozen=True)

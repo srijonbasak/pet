@@ -459,6 +459,27 @@ void spriteFillTriangle(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t
 
 // Scene format is generated on the desktop. The fixed engine interprets
 // background, rectangle, text, gauge and RGB565 animation-frame commands.
+// Cache the arc geometry once per radius; no trigonometry on redraw.
+void drawUsageRing(int cx, int cy, int radius, int percent, uint16_t color) {
+  static int8_t xs[136], ys[136];
+  static int cachedRadius = -1;
+  if (cachedRadius != radius) {
+    for (int i = 0; i <= 135; ++i) {
+      float angle = (135.0f + i * 2.0f) * 0.017453293f;
+      xs[i] = lroundf(cosf(angle) * (radius - 7));
+      ys[i] = lroundf(sinf(angle) * (radius - 7));
+    }
+    cachedRadius = radius;
+  }
+  int lit = percent < 0 ? 0 : constrain(percent, 0, 100) * 136 / 100;
+  const uint16_t track = tft.color565(194, 205, 219);
+  // Paint the track first so its end cannot cover the coloured segment.
+  for (int i = 0; i <= 135; ++i)
+    canvas.fillCircle(cx + xs[i], cy + ys[i], 7, track);
+  for (int i = 0; i < lit; ++i)
+    canvas.fillCircle(cx + xs[i], cy + ys[i], 7, color);
+}
+
 bool drawScene(char page) {
   File file = SPIFFS.open("/scene.txt", FILE_READ);
   if (!file) return false;
@@ -521,21 +542,14 @@ bool drawScene(char page) {
       for (int i = 0; i < 3; i++) if (displaySettings.widgets & enabledBits[i]) {
         if (selected-- == 0) { index = i; break; }
       }
-      int lit = values[index] < 0 ? 0 : constrain(values[index], 0, 100) * 54 / 100;
-      for (int i = 0; i <= 54; i++) {
-        float a = (135.0f + i * 5.0f) * 0.017453293f;
-        float dx = cosf(a), dy = sinf(a);
-        spriteLine(cx + dx * (radius - 9), cy + dy * (radius - 9),
-                   cx + dx * radius, cy + dy * radius,
-                   i < lit ? color : tft.color565(224, 230, 237));
-      }
-      canvas.setTextColor(tft.color565(100, 116, 138)); canvas.setTextSize(1);
-      canvas.setCursor(cx - strlen(names[index]) * 3, cy - 25); canvas.print(names[index]);
+      drawUsageRing(cx, cy, radius, values[index], color);
+      canvas.setTextColor(tft.color565(52, 68, 90)); canvas.setTextSize(2);
+      canvas.setCursor(cx - strlen(names[index]) * 6, cy - 30); canvas.print(names[index]);
       String value = values[index] < 0 ? "--" : String(values[index]) + "%";
       canvas.setTextColor(tft.color565(34, 45, 62)); canvas.setTextSize(4);
       canvas.setCursor(cx - value.length() * 12, cy - 5); canvas.print(value);
-      canvas.setTextColor(tft.color565(100, 116, 138)); canvas.setTextSize(1);
-      canvas.setCursor(cx - 12, cy + 34); canvas.print("LEFT");
+      canvas.setTextColor(tft.color565(52, 68, 90)); canvas.setTextSize(2);
+      canvas.setCursor(cx - 24, cy + 34); canvas.print("LEFT");
     } else if (kind == "I") {
       int frame = fieldAt(line, 2).toInt(), total = fieldAt(line, 3).toInt();
       int frameMs = constrain(fieldAt(line, 4).toInt(), 80, 2000);
@@ -669,43 +683,30 @@ void drawUsage() {
   }
 
   const uint16_t ink = tft.color565(34, 45, 62);
-  const uint16_t soft = tft.color565(135, 149, 166);
+  const uint16_t soft = tft.color565(52, 68, 90);
   const uint16_t track = tft.color565(224, 230, 237);
   canvas.fillSprite(TFT_WHITE);
 
-  // A 270-degree speedometer. Drawing short radial strokes keeps the arc
-  // compatible with the lightweight ST7789 sprite library.
+  // Use the same solid arc as desktop-authored scenes.
   int percent = values[current];
-  int lit = percent < 0 ? 0 : constrain(percent, 0, 100) * 54 / 100;
-  for (int i = 0; i <= 54; i++) {
-    float angle = (135.0f + i * 5.0f) * 0.017453293f;
-    float dx = cosf(angle), dy = sinf(angle);
-    uint16_t color = i < lit ? CODEX : track;
-    spriteLine(120 + dx * 82, 108 + dy * 82,
-               120 + dx * 91, 108 + dy * 91, color);
-    spriteLine(120 + dx * 83, 108 + dy * 83,
-               120 + dx * 90, 108 + dy * 90, color);
-    if (i % 9 == 0) {
-      spriteLine(120 + dx * 96, 108 + dy * 96,
-                 120 + dx * 100, 108 + dy * 100, soft);
-    }
-  }
+  drawUsageRing(120, 108, 91, percent, CODEX);
   canvas.setTextColor(soft, TFT_WHITE);
-  canvas.setTextSize(1);
-  canvas.setCursor(120 - strlen(labels[current]) * 3, 85);
+  canvas.setTextSize(2);
+  canvas.setCursor(120 - strlen(labels[current]) * 6, 78);
   canvas.print(labels[current]);
   String value = percent < 0 ? "--" : String(percent) + "%";
   canvas.setTextColor(ink, TFT_WHITE);
   canvas.setTextSize(4);
   canvas.setCursor(120 - value.length() * 12, 103);
   canvas.print(value);
-  canvas.setTextSize(1);
+  canvas.setTextSize(2);
   canvas.setTextColor(soft, TFT_WHITE);
-  canvas.setCursor(108, 143);
+  canvas.setCursor(96, 143);
   canvas.print("LEFT");
   canvas.fillRect(85, 169, 70, 2, CODEX);
 
   // The selected label and page indicators make it clear which limit is shown.
+  canvas.setTextSize(1);
   canvas.setCursor(64, 199);
   canvas.print("0");
   canvas.setCursor(157, 199);
